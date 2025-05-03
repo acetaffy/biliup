@@ -49,7 +49,7 @@ class SyncDownloader:
         """
         :param stream_url:   拉流地址
 
-        :param segment_duration: 每段录制时长（秒）（暂时不用）
+        :param segment_duration: 每段录制时长（秒）
         :param max_file_size:     文件最小大小，不足时进行 0x00 填充 单位 MB
         :param read_block_size:   从 streamlink stdout 读取数据时的单次块大小
         :param output_prefix:     输出文件名前缀
@@ -58,12 +58,18 @@ class SyncDownloader:
         self.quality = "best"
         self.headers = headers
         self.segment_duration = segment_duration
-        self.read_block_size = 500
+        # 增加读取块大小，减少队列项目数量
+        self.read_block_size = 4096  # 增大到4KB提高效率
         self.max_file_size = max_file_size
         self.output_prefix = output_prefix
 
         self.video_queue: queue.SimpleQueue = video_queue
         self.stop_event = threading.Event()
+        
+        # 添加队列大小控制
+        self.max_queue_size = 100 * 1024 * 1024  # 限制队列最大内存占用为100MB
+        self.current_queue_size = 0  # 当前队列数据总大小
+        self.queue_size_lock = threading.Lock()  # 用于线程安全控制
 
     def run_ffmpeg_with_url(self, ffmpeg_cmd, output_filename):
         with subprocess.Popen(ffmpeg_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE) as ffmpeg_proc:
@@ -144,8 +150,19 @@ class SyncDownloader:
         for i in [
             "-fflags", "+genpts",
             "-i", input_source,  # 输入源
-            # "-t", str(segment_duration),
-            "-fs", f"{self.max_file_size}M",
+        ]:
+            cmd.append(i)
+            
+        # 添加参数：时长限制和文件大小限制
+        if segment_duration and segment_duration > 0:
+            cmd.append("-t")
+            cmd.append(str(segment_duration))
+            
+        cmd.append("-fs")
+        cmd.append(f"{self.max_file_size}M")
+        
+        # 其他参数
+        for i in [
             "-c:v", "copy",
             "-c:a", "copy",
             "-reset_timestamps", "1",

@@ -130,7 +130,20 @@ class DownloadBase(ABC):
                     if not self.file_size:
                         self.file_size = 2 * 1024 * 1024 * 1024
                     self.file_size = ((self.file_size + min_size - 1) // min_size) * min_size  # 向上取整
+                    
+                    # 处理分段时间
+                    segment_duration = None
+                    if self.segment_time:
+                        # 将HH:MM:SS格式转换为秒数
+                        try:
+                            seg_time = self.segment_time.split(':')
+                            segment_duration = int(seg_time[0]) * 3600 + int(seg_time[1]) * 60 + int(seg_time[2])
+                            logger.info(f"{self.plugin_msg}: 使用分段时间: {self.segment_time} ({segment_duration}秒)")
+                        except Exception as e:
+                            logger.error(f"{self.plugin_msg}: 解析分段时间失败: {e}")
+                    
                     sync_download(self.raw_stream_url, self.fake_headers,
+                                segment_duration=segment_duration,
                                 max_file_size=int(self.file_size / 1024 / 1024),
                                 output_prefix=self.gen_download_filename(True),
                                 stream_info=stream_info,
