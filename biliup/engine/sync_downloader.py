@@ -82,19 +82,49 @@ class SyncDownloader:
                     if err:
                         logger.error("[run] ffmpeg err " + err.decode("utf-8", errors="replace"))
                     return False
-                self.video_queue.put(data)  # 将第一个数据放入队列
+                
+                self._safe_put_data(data)  # 使用安全的数据放入方法
+                
                 while True:
                     data = ffmpeg_proc.stdout.read(self.read_block_size)
                     if not data:
                         logger.info("[run] ffmpeg stdout 已到达 EOF。结束本段写入。")
                         break
-                    self.video_queue.put(data)
+                    
+                    # 检查是否需要限制录制速度以防止OOM
+                    self._safe_put_data(data)
+                    
             ffmpeg_proc.wait()
             # 输出 ffmpeg 的错误信息（如果有的话）
             # err = ffmpeg_proc.stderr.read()
             # if err:
             #     logger.error("[run] ffmpeg err " + err.decode("utf-8", errors="replace"))
         return True  # 如果正常执行，返回 True
+        
+    def _safe_put_data(self, data):
+        """安全地将数据放入队列，并控制队列大小"""
+        data_size = len(data)
+        
+        # 检查队列大小并在必要时等待
+        with self.queue_size_lock:
+            # 当队列数据量超过阈值时，暂停添加新数据
+            while self.current_queue_size > self.max_queue_size and not self.stop_event.is_set():
+                logger.debug(f"队列数据量过大 ({self.current_queue_size/1024/1024:.2f}MB)，暂停添加")
+                # 释放锁并等待一小段时间
+                self.queue_size_lock.release()
+                time.sleep(0.1)  # 等待100ms
+                # 重新获取锁并检查大小
+                self.queue_size_lock.acquire()
+                
+            # 更新大小并放入数据
+            self.current_queue_size += data_size
+            
+        # 放入队列
+        self.video_queue.put(data)
+        
+        # 每放入20MB数据输出一次日志
+        if data_size > 0 and self.current_queue_size % (20 * 1024 * 1024) < data_size:
+            logger.debug(f"当前队列数据量: {self.current_queue_size/1024/1024:.2f}MB")
 
     def run_streamlink_with_ffmpeg(self, streamlink_cmd, ffmpeg_cmd, output_filename):
         with subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as streamlink_proc:
@@ -118,14 +148,15 @@ class SyncDownloader:
                             logger.error("[run] streamlink err " + streamlink_err.decode("utf-8", errors="replace"))
                         return False
 
-                    self.video_queue.put(data)  # 将第一个数据放入队列
+                    self._safe_put_data(data)  # 使用安全方法放入队列
+                    
                     # 继续读取剩余数据
                     while True:
                         data = ffmpeg_proc.stdout.read(self.read_block_size)
                         if not data:
                             logger.info("[run] ffmpeg stdout 已到达 EOF。结束本段写入。")
                             break
-                        self.video_queue.put(data)
+                        self._safe_put_data(data)  # 使用安全方法放入队列
 
                 ffmpeg_proc.wait()
                 logger.info("[run] ffmpeg 已到达输出大小并退出。结束本段写入。")

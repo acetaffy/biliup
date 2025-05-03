@@ -2,6 +2,7 @@ import asyncio
 import base64
 import concurrent.futures
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -600,10 +601,25 @@ class BiliBili:
         save_file = None
         if self.save_dir:
             save_file = open(self.save_path, "wb")
+            
+        # 获取SyncDownloader实例以访问队列大小控制
+        downloader = None
+        for frame in inspect.stack():
+            if 'self' in frame.frame.f_locals and hasattr(frame.frame.f_locals['self'], 'current_queue_size'):
+                downloader = frame.frame.f_locals['self']
+                break
 
         while chunks_yielded < total_chunks:
             try:
                 data = simple_queue.get(timeout=10)
+                
+                # 减少队列计数（如果有）
+                if downloader and hasattr(downloader, 'queue_size_lock'):
+                    with downloader.queue_size_lock:
+                        if data and hasattr(downloader, 'current_queue_size'):
+                            downloader.current_queue_size -= len(data)
+                            if downloader.current_queue_size < 0:
+                                downloader.current_queue_size = 0
             except queue.Empty:
                 break
 
